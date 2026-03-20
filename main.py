@@ -21,6 +21,7 @@ async def main(page: ft.Page):
     # 注意：ConfigManager 是单例，Logger 已经全局初始化
     conf = ConfigManager()
     db = DBManager()
+    await db.init_db()
     spider = MangaSpider()
     sync_manager = SyncManager(db, spider)
 

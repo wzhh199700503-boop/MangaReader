@@ -16,10 +16,9 @@ class MangaSpider:
     async def fetch_list_page(self, page_num: int) -> Dict[str, Any]:
         """抓取列表页并增加错误检查"""
         # 修正 URL 拼接逻辑：如果是第一页，尝试直接访问基准路径
-        if page_num == 1:
-            url = f"{self.base_url}/manhua/all/ob/time/st/completed"
-        else:
-            url = f"{self.base_url}/manhua/all/ob/time/st/completed/page/{page_num}.html"
+        url = f"{self.base_url}/manhua/all/ob/time/st/completed"
+        if page_num > 1:
+            url = f"{url}/page/{page_num}"
 
         print(f"正在请求: {url}")
 
@@ -45,7 +44,7 @@ class MangaSpider:
                     return {"total_pages": 0, "mangas": []}
 
                 page_text = page_total_tag.get_text() # "1 / 78页"
-                match = re.search(r"/ (\d+)页", page_text)
+                match = re.search(r"/\s*(\d+)\s*页", page_text)
                 total_pages = int(match.group(1)) if match else 1
                 
                 # 解析漫画列表

@@ -10,6 +10,8 @@ class DBManager:
 
     async def init_db(self):
         """初始化所有表结构"""
+        if os.path.exists(self.db_path):
+            return
         # 修正点：直接使用 aiosqlite.connect 作为上下文管理器
         async with aiosqlite.connect(self.db_path) as db:
             # 1. 配置连接（开启外键，设置 RowFactory）
