@@ -25,6 +25,7 @@ class ImageService(QObject):
         file_name = f"{image_order:03d}.{ext}"
         local_path = os.path.join(
             cfg.get(cfg.dataDir), 
+            'manga',
             str(manga_id), 
             str(chapter_id), 
             file_name
