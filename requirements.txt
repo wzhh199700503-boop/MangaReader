@@ -1,11 +1,22 @@
-# UI 框架
-flet>=0.21.0
+# --- GUI 框架 ---
+PyQt6>=6.4.0
+# 官方开源版，如果后续你购买了 Pro 版可替换
+PyQt6-Fluent-Widgets>=1.5.0
 
-# 网络请求 (异步)
-httpx>=0.27.0
+# --- 网络请求 (B.4, B.5, B.6) ---
+requests>=2.31.0
+# 处理 SSL 证书或复杂的请求重试
+urllib3>=2.0.0
 
-# HTML 解析
+# --- 爬虫解析 (B.6) ---
 beautifulsoup4>=4.12.0
+# 推荐使用 lxml 作为解析引擎，速度比 html.parser 快很多
+lxml>=4.9.0
 
-# 异步 SQLite 库
-aiosqlite>=0.20.0
+# --- 日志服务 (B.2) ---
+# 相比自带的 logging，loguru 更适合快速开发和多线程环境
+loguru>=0.7.0
+
+# --- 图像处理 (可选，但在 D.5 中可能用到) ---
+# 虽有 QImage，但在后台线程预检查图片头或转码时 Pillow 很方便
+Pillow>=10.0.0

@@ -1,121 +1,172 @@
-import aiosqlite
+import sqlite3
 import os
-import asyncio
+from loguru import logger
+from common.config import cfg
 
-class DBManager:
-    def __init__(self, db_path="data/manga_reader.db"):
-        self.db_path = db_path
-        # 确保数据目录存在
+class DatabaseManager:
+    """ B.7 数据库服务 """
+
+    def __init__(self):
+        # 确保目录存在
+        self.db_path = os.path.join(cfg.get(cfg.dataDir), "db", "manga_reader.db")
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        self._conn = None
 
-    async def init_db(self):
-        """初始化所有表结构"""
-        if os.path.exists(self.db_path):
-            return
-        # 修正点：直接使用 aiosqlite.connect 作为上下文管理器
-        async with aiosqlite.connect(self.db_path) as db:
-            # 1. 配置连接（开启外键，设置 RowFactory）
-            await db.execute("PRAGMA foreign_keys = ON")
-            db.row_factory = aiosqlite.Row
+    def get_connection(self):
+        """ 获取数据库连接 (单例感) """
+        if self._conn is None:
+            self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            # 开启 WAL 模式：支持高并发读写，防止“database is locked”
+            self._conn.execute("PRAGMA journal_mode = WAL;")
+            # 开启外键约束
+            self._conn.execute("PRAGMA foreign_keys = ON;")
+        return self._conn
 
-            # 2. Manga 表
-            await db.execute("""
+    def init_db(self):
+        """ 7.1 数据库初始化 (幂等) """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        try:
+            # 1.1 漫画表 (manga_id 为解析获取，设为主键)
+            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS manga (
                     manga_id TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
-                    manga_url_path TEXT,
-                    cover_url TEXT,
-                    release_date TEXT,
-                    list_remark TEXT,
+                    finished_date TEXT,
                     author TEXT,
-                    description TEXT,
+                    intro TEXT,
                     rating REAL,
-                    cache_status INTEGER DEFAULT 0,
+                    cover_online_path TEXT,
+                    cover_local_path TEXT,
                     is_favorite INTEGER DEFAULT 0
                 )
-            """)
+            ''')
 
-            # 3. Chapters 表
-            await db.execute("""
+            # 1.2 章节表
+            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS chapters (
-                    chapter_id TEXT PRIMARY KEY,  -- 修改点：INTEGER 改为 TEXT，去掉 AUTOINCREMENT
-                    manga_id TEXT,      
-                    chapter_name TEXT,
-                    chapter_path TEXT,
-                    sort_index INTEGER,
-                    FOREIGN KEY (manga_id) REFERENCES manga (manga_id) ON DELETE CASCADE
-                )
-            """)
-
-            # 4. History 表
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS history (
-                    manga_id TEXT PRIMARY KEY,
-                    chapter_id TEXT,
-                    page_index INTEGER DEFAULT 0,
-                    last_read_time INTEGER,
-                    FOREIGN KEY (manga_id) REFERENCES manga (manga_id) ON DELETE CASCADE,
-                    FOREIGN KEY (chapter_id) REFERENCES chapters (chapter_id) ON DELETE SET NULL
-                )
-            """)
-
-            # 5. Images 表
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS images (
-                    image_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
                     manga_id TEXT,
-                    chapter_id TEXT,
-                    image_url TEXT,
-                    local_path TEXT,
-                    page_index INTEGER,
-                    download_status INTEGER DEFAULT 0,
-                    FOREIGN KEY (manga_id) REFERENCES manga (manga_id) ON DELETE CASCADE,
-                    FOREIGN KEY (chapter_id) REFERENCES chapters (chapter_id) ON DELETE CASCADE
+                    chapter_order REAL,
+                    FOREIGN KEY(manga_id) REFERENCES manga(manga_id) ON DELETE CASCADE
                 )
-            """)
+            ''')
 
-            await db.commit()
-            print(f"数据库初始化成功: {os.path.abspath(self.db_path)}")
-            
-    async def check_manga_exists(self, manga_id: str) -> bool:
-        """快速检查漫画是否在库"""
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("SELECT 1 FROM manga WHERE manga_id = ?", (manga_id,)) as cursor:
-                return await cursor.fetchone() is not None
+            # 1.3 图片表 (下载状态：-1=失效, 0=未下, 1=已下)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS images (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    manga_id TEXT,
+                    chapter_id INTEGER,
+                    image_order INTEGER,
+                    online_path TEXT,
+                    local_path TEXT,
+                    download_status INTEGER DEFAULT 0,
+                    FOREIGN KEY(chapter_id) REFERENCES chapters(id) ON DELETE CASCADE
+                )
+            ''')
 
-    async def save_full_manga_data(self, basic, detail):
-        """原子化保存：列表数据 + 详情数据 + 章节列表"""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("PRAGMA foreign_keys = ON")
-            
-            # 1. 存主表
-            await db.execute("""
-                INSERT OR REPLACE INTO manga (
-                    manga_id, title, manga_url_path, cover_url, release_date, 
-                    list_remark, author, description, rating
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                basic["manga_id"], basic["title"], basic["manga_url_path"],
-                basic["cover_url"], basic["release_date"], basic["list_remark"],
-                detail["author"], detail["description"], detail["rating"]
+            # 1.4 标签表
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS tags (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tag_name TEXT UNIQUE NOT NULL
+                )
+            ''')
+
+            # 1.5 漫画标签关联表
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS manga_tags (
+                    manga_id TEXT,
+                    tag_id INTEGER,
+                    PRIMARY KEY (manga_id, tag_id),
+                    FOREIGN KEY(manga_id) REFERENCES manga(manga_id) ON DELETE CASCADE,
+                    FOREIGN KEY(tag_id) REFERENCES tags(id) ON DELETE CASCADE
+                )
+            ''')
+
+            # --- 性能补丁：建立索引 ---
+            # 针对 900 万行图片数据，必须对查询频次最高的字段建索引
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_images_manga_id ON images(manga_id);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_images_chapter_id ON images(chapter_id);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_chapters_manga_id ON chapters(manga_id);")
+
+            conn.commit()
+            logger.info(f"数据库初始化成功: {self.db_path}")
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"数据库初始化失败: {e}")
+            raise e
+    # 在 DatabaseManager 类中添加以下方法
+    def manga_exists(self, manga_id: str) -> bool:
+        """ 7.5 通过漫画id判断是否存在 """
+        conn = self.get_connection()
+        cur = conn.execute("SELECT 1 FROM manga WHERE manga_id = ?", (manga_id,))
+        return cur.fetchone() is not None
+
+    def insert_manga_full_transaction(self, manga_info: dict, chapters: list, tags: list):
+        """ 7.4 事务新增：一条漫画 + 若干章节 + 若干图片 + 标签关联 """
+        conn = self.get_connection()
+        cur = conn.cursor()
+        try:
+            # 1. 插入或忽略标签，获取标签ID
+            tag_ids = []
+            for tag_name in tags:
+                cur.execute("INSERT OR IGNORE INTO tags (tag_name) VALUES (?)", (tag_name,))
+                cur.execute("SELECT id FROM tags WHERE tag_name = ?", (tag_name,))
+                tag_ids.append(cur.fetchone()[0])
+
+            # 2. 插入漫画主表
+            cur.execute('''
+                INSERT INTO manga (manga_id, title, finished_date, author, intro, rating, cover_online_path, cover_local_path)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                manga_info['manga_id'], manga_info['title'], manga_info['release_date'],
+                manga_info['author'], manga_info['description'], manga_info['rating'],
+                manga_info['cover_url'], manga_info['cover_local_path']
             ))
 
-            # 2. 存章节 (使用 executemany 提高效率)
-            chapter_tasks = [
-                (f"{basic['manga_id']}_{c['chapter_path']}", basic['manga_id'], 
-                 c['chapter_name'], c['chapter_path'], c['sort_index'])
-                for c in detail["chapters"]
-            ]
-            await db.executemany("""
-                INSERT OR IGNORE INTO chapters (
-                    chapter_id, manga_id, chapter_name, chapter_path, sort_index
-                ) VALUES (?, ?, ?, ?, ?)
-            """, chapter_tasks)
-            
-            await db.commit()
-async def test():
-    manager = DBManager()
-    await manager.init_db()
+            # 3. 关联标签
+            for t_id in tag_ids:
+                cur.execute("INSERT INTO manga_tags (manga_id, tag_id) VALUES (?, ?)", (manga_info['manga_id'], t_id))
 
-if __name__ == "__main__":
-    asyncio.run(test())
+            # 4. 插入章节与图片
+            for chap in chapters:
+                cur.execute('''
+                    INSERT INTO chapters (title, manga_id, chapter_order)
+                    VALUES (?, ?, ?)
+                ''', (chap['title'], manga_info['manga_id'], chap['order']))
+                chapter_id = cur.lastrowid
+
+                # 插入该章节下的所有图片记录 (初始状态为 0)
+                img_data = [(manga_info['manga_id'], chapter_id, img['order'], img['url']) for img in chap['images']]
+                cur.executemany('''
+                    INSERT INTO images (manga_id, chapter_id, image_order, online_path)
+                    VALUES (?, ?, ?, ?)
+                ''', img_data)
+
+            conn.commit()
+            return True
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"事务写入失败 | MangaID: {manga_info['manga_id']} | 错误: {e}")
+            return False
+    def update_image_status(self, m_id: str, c_id: int, order: int, status: int):
+        """ 7.8 修改下载状态 (-1=失效, 0=未下, 1=已下) """
+        conn = self.get_connection()
+        try:
+            conn.execute('''
+                UPDATE images 
+                SET download_status = ? 
+                WHERE manga_id = ? AND chapter_id = ? AND image_order = ?
+            ''', (status, m_id, c_id, order))
+            conn.commit()
+            return True
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"更新图片状态失败 | 任务: {m_id}_{c_id}_{order} | 错误: {e}")
+            return False
+# 实例化单例
+db_manager = DatabaseManager()

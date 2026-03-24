@@ -1,5 +1,27 @@
 {
-    "is_full_synced": false,
-    "debug_mode": true,
-    "last_sync_date": ""
+    "Basic": {
+        "ConcurrentTasks": 4,
+        "DataDir": "data",
+        "IsDownloadDebug": true,
+        "IsFullUpdated": false,
+        "LogDir": "logs",
+        "LogLevel": "INFO",
+        "RetryCount": 3
+    },
+    "QFluentWidgets": {
+        "FontFamilies": [
+            "Segoe UI",
+            "Microsoft YaHei",
+            "PingFang SC"
+        ]
+    },
+    "Reading": {
+        "ImageRotation": 0,
+        "ImageZoom": 100,
+        "ScrollSpeed": 5
+    },
+    "Appearance": {
+        "ThemeColor": "#0078d4",
+        "ThemeMode": "Auto"
+    }
 }

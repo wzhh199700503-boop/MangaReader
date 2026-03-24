@@ -1,51 +1,39 @@
-import logging
-import os
 import sys
-from logging.handlers import TimedRotatingFileHandler
-from core.config_manager import ConfigManager
+import os
+from loguru import logger
+from common.config import cfg
 
-class LogManager:
-    def __init__(self, log_dir="logs", debug_mode=False):
-        self.log_dir = log_dir
-        os.makedirs(self.log_dir, exist_ok=True)
+class LoggerManager:
+    """ B.2 日志服务 """
+    
+    @staticmethod
+    def setup():
+        # 1. 确定日志路径
+        log_path = os.path.join(cfg.get(cfg.dataDir), cfg.get(cfg.logDir))
+        os.makedirs(log_path, exist_ok=True)
+
+        # 2. 移除 loguru 默认的 handler
+        logger.remove()
+
+        # 3. 配置控制台输出 (2.3: debug 模式下输出所有级别)
+        # 如果是 debug 模式，强制 level 为 DEBUG，否则使用配置的 logLevel
+        console_level = "DEBUG" if cfg.get(cfg.isDownloadDebug) else cfg.get(cfg.logLevel)
         
-        self.logger = logging.getLogger("MangaReader")
-        self.logger.setLevel(logging.DEBUG) # 顶层设为 DEBUG，由 Handler 过滤
-        self.logger.handlers.clear() # 防止重复添加 Handler
-
-        # 1. 统一的格式：[2026-03-20 18:00:00] [INFO] Message
-        formatter = logging.Formatter(
-            '[%(asctime)s] [%(levelname)s] %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
+        logger.add(
+            sys.stdout, 
+            level=console_level,
+            format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{message}</cyan>",
+            enqueue=True
         )
 
-        # 2. 文件 Handler (按天切割，保留30天)
-        file_handler = TimedRotatingFileHandler(
-            filename=os.path.join(self.log_dir, "app.log"),
-            when="midnight",
-            interval=1,
-            backupCount=30,
-            encoding="utf-8"
+        # 4. 配置物理文件输出 (2.1: 按天分割)
+        # 2.2: 自动处理 info, warn, error 分类进入文件
+        logger.add(
+            os.path.join(log_path, "manga_{time:YYYY-MM-DD}.log"),
+            rotation="00:00",      # 每天凌晨分割
+            retention="10 days",   # 保留10天
+            level="INFO",          # 文件至少记录 INFO 及以上
+            encoding="utf-8",
+            enqueue=True,          # 异步队列，防止阻塞 IO
+            compression="zip"      # 旧日志自动压缩
         )
-        file_handler.setFormatter(formatter)
-        file_handler.setLevel(logging.INFO) # 文件默认只记 INFO 及以上
-        self.logger.addHandler(file_handler)
-
-        # 3. 控制台 Handler
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setFormatter(formatter)
-        
-        # 核心逻辑：如果开启 debug_mode，控制台打印 DEBUG 及以上，否则只打印 INFO
-        if debug_mode:
-            console_handler.setLevel(logging.DEBUG)
-        else:
-            console_handler.setLevel(logging.INFO)
-            
-        self.logger.addHandler(console_handler)
-
-    def get_logger(self):
-        return self.logger
-
-# --- 逻辑修正：先实例化配置，再传给日志 ---
-_config_temp = ConfigManager()
-logger = LogManager(debug_mode=_config_temp.get("debug_mode", False)).get_logger()
