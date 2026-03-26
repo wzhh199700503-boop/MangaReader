@@ -1,139 +1,169 @@
-import os
-from PyQt6.QtCore import Qt, QSize, pyqtSignal
-from PyQt6.QtGui import QPixmap, QIcon
-from PyQt6.QtWidgets import QWidget, QVBoxLayout
-from qfluentwidgets import (FlowLayout, CardWidget, BodyLabel, CaptionLabel,
-                            ImageLabel, SmoothScrollArea, MSFluentWindow,
-                            FluentIcon as FIF, setFont)
+import math
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout
+from qfluentwidgets import (MSFluentWindow, FlowLayout, SmoothScrollArea, 
+                            SearchLineEdit, TransparentToolButton, FluentIcon as FIF, 
+                            BodyLabel, setFont, NavigationItemPosition)
 
 from core.database import db_manager
-from common.config import cfg
+from ui.components.manga_card import MangaCard
+from ui.components.pager import Pager
+from ui.components.tag_bar import TagBar
 
-class MangaCard(CardWidget):
-    """ D.9.2 漫画磁贴组件：展示封面、标题与作者 """
-    clicked = pyqtSignal(str) # 点击信号，传递 manga_id
+class LibraryInterface(QWidget):
+    """ 漫画库/收藏列表 通用展示页 """
+    mangaClicked = pyqtSignal(str) # 通知 MainWindow 切换到详情页
 
-    def __init__(self, manga_id, title, author, cover_path, parent=None):
+    def __init__(self, title_name, is_favorite_mode=False, parent=None):
         super().__init__(parent)
-        self.manga_id = manga_id
-        # 设置卡片固定大小，确保流式布局整齐
-        self.setFixedSize(160, 265)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.is_favorite_mode = is_favorite_mode
+        self.page_limit = 24
+        self.current_search = ""
+        self.current_tags = []
+        self.is_sort_desc = True
+        
+        self.setObjectName(title_name)
+        
+        self.v_layout = QVBoxLayout(self)
+        self.v_layout.setContentsMargins(30, 25, 30, 10)
+        self.v_layout.setSpacing(10)
 
-        self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(8, 8, 8, 8)
-        self.layout.setSpacing(5)
-
-        # 1. 封面图展示 (ImageLabel 支持圆角)
-        self.cover_label = ImageLabel(self)
-        self.cover_label.setFixedSize(144, 195)
-        self.cover_label.setBorderRadius(4, 4, 4, 4)
-
-        # 校验本地封面路径
-        if os.path.exists(cover_path):
-            self.cover_label.setImage(cover_path)
-        else:
-            self.cover_label.setText("暂无封面")
-
-        self.layout.addWidget(self.cover_label, 0, Qt.AlignmentFlag.AlignCenter)
-
-        # 2. 标题 (粗体，鼠标悬停显示完整标题)
-        self.title_label = BodyLabel(title, self)
-        self.title_label.setToolTip(title)
-        setFont(self.title_label, 13, 600)
-        self.layout.addWidget(self.title_label)
-
-        # 3. 作者信息
-        self.author_label = CaptionLabel(author, self)
-        self.author_label.setTextColor("#666666", "#aaaaaa")
-        self.layout.addWidget(self.author_label)
-
-    def mouseReleaseEvent(self, e):
-        """ 鼠标释放时发射点击信号 """
-        super().mouseReleaseEvent(e)
-        self.clicked.emit(self.manga_id)
-
-
-class HomeInterface(SmoothScrollArea):
-    """ D.9.2 主页界面：漫画库流式展示页 """
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.view = QWidget(self)
-        self.root_layout = QVBoxLayout(self.view)
-        self.root_layout.setContentsMargins(30, 25, 30, 25)
-
-        # 1. 页面大标题
-        self.title_label = BodyLabel("我的漫画库", self.view)
+        # --- 1. 标题与搜索栏区 ---
+        header_layout = QHBoxLayout()
+        self.title_label = BodyLabel(title_name, self)
         setFont(self.title_label, 28, 600)
-        self.root_layout.addWidget(self.title_label)
+        
+        self.search_bar = SearchLineEdit(self)
+        self.search_bar.setPlaceholderText("搜索漫画标题...")
+        self.search_bar.setFixedWidth(300)
+        self.search_bar.searchSignal.connect(self._on_search)
+        self.search_bar.clearSignal.connect(lambda: self._on_search(""))
+        
+        # 排序切换按钮
+        self.sort_btn = TransparentToolButton(FIF.UP, self)
+        self.sort_btn.setToolTip("当前：最新发布，点击切换正序")
+        self.sort_btn.clicked.connect(self._on_sort_toggled)
 
-        # 2. 核心：FlowLayout 流式布局
-        # 当窗口缩放时，卡片会自动换行
-        self.flow_layout = FlowLayout()
-        self.flow_layout.setAnimation(250) # 启用优雅的排列动画
+        header_layout.addWidget(self.title_label)
+        header_layout.addStretch(1)
+        header_layout.addWidget(self.search_bar)
+        header_layout.addWidget(self.sort_btn)
+        self.v_layout.addLayout(header_layout)
+
+        # --- 2. 标签栏 (只有漫画库显示，收藏页可按需隐藏) ---
+        self.tag_bar = TagBar(self)
+        self.tag_bar.tagsChanged.connect(self._on_tags_changed)
+        self.v_layout.addWidget(self.tag_bar)
+        
+        if not self.is_favorite_mode:
+            all_tags = db_manager.get_all_tags()
+            self.tag_bar.load_tags(all_tags)
+        else:
+            self.tag_bar.hide() # 收藏页默认隐藏标签栏让空间更大，你也可以打开
+
+        # --- 3. 核心：漫画流式展示区 ---
+        self.scroll_area = SmoothScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        
+        self.gallery_widget = QWidget()
+        self.gallery_widget.setStyleSheet("background: transparent;")
+        self.flow_layout = FlowLayout(self.gallery_widget)
+        self.flow_layout.setAnimation(250)
+        self.flow_layout.setContentsMargins(0, 10, 0, 10)
         self.flow_layout.setSpacing(20)
-        self.flow_layout.setContentsMargins(0, 15, 0, 15)
-        self.root_layout.addLayout(self.flow_layout)
+        
+        self.scroll_area.setWidget(self.gallery_widget)
+        self.v_layout.addWidget(self.scroll_area, stretch=1)
 
-        # 底部填充，确保卡片靠顶对齐
-        self.root_layout.addStretch(1)
+        # --- 4. 分页器 ---
+        self.pager = Pager(self)
+        self.pager.pageChanged.connect(self._load_data)
+        self.v_layout.addWidget(self.pager)
 
-        self.setWidget(self.view)
-        self.setWidgetResizable(True)
-        self.setObjectName("homeInterface")
+        # 初始化加载第一页数据
+        self._load_data(1)
 
-        # 从数据库加载漫画数据
-        self.load_mangas()
+    def keyPressEvent(self, e):
+        """ 支持键盘 Left/Right 翻页 """
+        if e.key() == Qt.Key.Key_Left:
+            self.pager._on_prev_clicked()
+        elif e.key() == Qt.Key.Key_Right:
+            self.pager._on_next_clicked()
+        super().keyPressEvent(e)
 
-    def load_mangas(self):
-        """ 从数据库拉取所有漫画并渲染卡片 """
-        # 清空现有布局，防止重复加载
+    def _on_search(self, text):
+        self.current_search = text
+        self._load_data(1) # 搜索时重置为第一页
+
+    def _on_tags_changed(self, tags):
+        self.current_tags = tags
+        self._load_data(1)
+
+    def _on_sort_toggled(self):
+        self.is_sort_desc = not self.is_sort_desc
+        icon = FIF.UP if self.is_sort_desc else FIF.DOWN
+        self.sort_btn.setIcon(icon)
+        self.sort_btn.setToolTip("当前：最新发布" if self.is_sort_desc else "当前：最早发布")
+        self._load_data(1)
+
+    def _load_data(self, page):
+        """ 核心数据加载组装逻辑 """
+        # 清空画廊
         while self.flow_layout.count():
             item = self.flow_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
 
-        # 获取数据库连接并查询
-        conn = db_manager.get_connection()
-        cursor = conn.execute("SELECT manga_id, title, author, cover_local_path FROM manga")
+        # 1. 计算总页数
+        total_count = db_manager.get_total_count(self.current_search, self.current_tags, self.is_favorite_mode)
+        total_pages = math.ceil(total_count / self.page_limit)
+        
+        self.pager.set_total_pages(total_pages)
+        self.pager.set_current_page(page)
 
-        for row in cursor.fetchall():
+        # 2. 拉取数据并渲染卡片
+        manga_list = db_manager.get_manga_list(
+            page=page, 
+            limit=self.page_limit, 
+            search=self.current_search, 
+            tags=self.current_tags, 
+            sort_desc=self.is_sort_desc,
+            is_favorite=self.is_favorite_mode
+        )
+
+        for row in manga_list:
             m_id, title, author, cover_path = row
-            # 创建漫画卡片
-            card = MangaCard(m_id, title, author, cover_path, self.view)
-            card.clicked.connect(self._on_card_clicked)
+            card = MangaCard(m_id, title, author, cover_path, self.gallery_widget)
+            card.clicked.connect(self.mangaClicked.emit)
             self.flow_layout.addWidget(card)
-
-    def _on_card_clicked(self, manga_id):
-        """ 处理漫画点击事件 """
-        print(f"DEBUG: 准备打开漫画详情 ID: {manga_id}")
-        # TODO: 发送信号至 MainWindow 切换到详情页
 
 
 class MainWindow(MSFluentWindow):
-    """ A.2 主窗口：采用 MSFluentWindow (微软商店风格) """
+    """ A.2 主窗口：集成导航栏 """
     def __init__(self):
         super().__init__()
         self.setWindowTitle("MangaReader")
-
-        # 1. 初始化子页面
-        self.home_interface = HomeInterface(self)
-        # TODO: self.setting_interface = SettingInterface(self)
-
-        # 2. 将子页面添加到侧边导航栏
-        self.addSubInterface(self.home_interface, FIF.HOME, "主页")
-
-        # 3. 窗口基础设置
-        self.resize(1100, 850)
+        self.resize(1150, 850)
         
-        # 窗口居中逻辑
+        # 居中显示
         desktop = self.screen().availableGeometry()
         self.move(int((desktop.width() - self.width()) / 2),
                   int((desktop.height() - self.height()) / 2))
 
-    def closeEvent(self, event):
-        """ 覆盖关闭事件，确保主循环彻底退出 """
-        from PyQt6.QtWidgets import QApplication
-        super().closeEvent(event)
-        # 恢复应用退出逻辑，防止后台线程(UpdateService)成为孤儿进程
-        QApplication.instance().setQuitOnLastWindowClosed(True)
+        # 1. 初始化页面 (复用 LibraryInterface，仅参数不同)
+        self.library_interface = LibraryInterface("我的漫画库", is_favorite_mode=False, parent=self)
+        self.favorite_interface = LibraryInterface("收藏列表", is_favorite_mode=True, parent=self)
+        
+        # TODO: self.setting_interface = SettingInterface(self)
+        self.setting_interface = QWidget() # 占位
+        self.setting_interface.setObjectName("SettingInterface")
+
+        # 2. 绑定页面跳转信号 (占位打印，后续接入详情页)
+        self.library_interface.mangaClicked.connect(lambda m_id: print(f"主库点击: {m_id}"))
+        self.favorite_interface.mangaClicked.connect(lambda m_id: print(f"收藏点击: {m_id}"))
+
+        # 3. 添加到侧边导航栏
+        self.addSubInterface(self.library_interface, FIF.HOME, "漫画库")
+        self.addSubInterface(self.favorite_interface, FIF.HEART, "收藏列表")
+        self.addSubInterface(self.setting_interface, FIF.SETTING, "设置", NavigationItemPosition.BOTTOM)

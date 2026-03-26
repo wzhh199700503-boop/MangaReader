@@ -168,33 +168,51 @@ class DatabaseManager:
             conn.rollback()
             logger.error(f"更新图片状态失败 | 任务: {m_id}_{c_id}_{order} | 错误: {e}")
             return False
-    def get_manga_list(self, page=1, limit=24, search="", tags=None, sort_desc=True):
-        """ 分页获取漫画列表，支持搜索、标签过滤和排序 """
+    def get_manga_list(self, page=1, limit=24, search="", tags=None, sort_desc=True, is_favorite=False):
+        """ 分页获取漫画列表，支持搜索、标签过滤、排序和收藏筛选 """
         offset = (page - 1) * limit
         params = []
         sql = "SELECT manga_id, title, author, cover_local_path FROM manga WHERE 1=1"
         
+        if is_favorite:
+            sql += " AND is_favorite = 1"
+            
         if search:
             sql += " AND title LIKE ?"
             params.append(f"%{search}%")
         
         if tags:
-            # 假设你有一个关联表 manga_tags
             placeholders = ','.join(['?'] * len(tags))
             sql += f" AND manga_id IN (SELECT manga_id FROM manga_tags WHERE tag_name IN ({placeholders}))"
             params.extend(tags)
 
         order = "DESC" if sort_desc else "ASC"
-        sql += f" ORDER BY update_time {order} LIMIT ? OFFSET ?"
+        # 假设你之前有个 update_time，如果没有可以用 finished_date 或 manga_id 排序
+        sql += f" ORDER BY manga_id {order} LIMIT ? OFFSET ?"
         params.extend([limit, offset])
 
         cursor = self.get_connection().execute(sql, params)
         return cursor.fetchall()
 
-    def get_total_count(self, search="", tags=None):
-        """ 获取总数用于计算总页数 """
-        # 逻辑同上，改为 SELECT COUNT(*)
-        return 1857 # 示例返回
+    def get_total_count(self, search="", tags=None, is_favorite=False):
+        """ 真实获取总数，用于精准计算总页数 """
+        params = []
+        sql = "SELECT COUNT(1) FROM manga WHERE 1=1"
+        
+        if is_favorite:
+            sql += " AND is_favorite = 1"
+            
+        if search:
+            sql += " AND title LIKE ?"
+            params.append(f"%{search}%")
+            
+        if tags:
+            placeholders = ','.join(['?'] * len(tags))
+            sql += f" AND manga_id IN (SELECT manga_id FROM manga_tags WHERE tag_name IN ({placeholders}))"
+            params.extend(tags)
+            
+        cursor = self.get_connection().execute(sql, params)
+        return cursor.fetchone()[0]
 
     def get_all_tags(self):
         """ 获取所有标签 """
