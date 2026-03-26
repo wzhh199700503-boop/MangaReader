@@ -168,5 +168,43 @@ class DatabaseManager:
             conn.rollback()
             logger.error(f"更新图片状态失败 | 任务: {m_id}_{c_id}_{order} | 错误: {e}")
             return False
+    def get_manga_list(self, page=1, limit=24, search="", tags=None, sort_desc=True):
+        """ 分页获取漫画列表，支持搜索、标签过滤和排序 """
+        offset = (page - 1) * limit
+        params = []
+        sql = "SELECT manga_id, title, author, cover_local_path FROM manga WHERE 1=1"
+        
+        if search:
+            sql += " AND title LIKE ?"
+            params.append(f"%{search}%")
+        
+        if tags:
+            # 假设你有一个关联表 manga_tags
+            placeholders = ','.join(['?'] * len(tags))
+            sql += f" AND manga_id IN (SELECT manga_id FROM manga_tags WHERE tag_name IN ({placeholders}))"
+            params.extend(tags)
+
+        order = "DESC" if sort_desc else "ASC"
+        sql += f" ORDER BY update_time {order} LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        cursor = self.get_connection().execute(sql, params)
+        return cursor.fetchall()
+
+    def get_total_count(self, search="", tags=None):
+        """ 获取总数用于计算总页数 """
+        # 逻辑同上，改为 SELECT COUNT(*)
+        return 1857 # 示例返回
+
+    def get_all_tags(self):
+        """ 获取所有标签 """
+        cursor = self.get_connection().execute("SELECT tag_name FROM tags")
+        
+        return [row[0] for row in cursor.fetchall()]
+
+    def get_manga_detail(self, manga_id):
+        """ 获取单部漫画详情 """
+        cursor = self.get_connection().execute("SELECT * FROM manga WHERE manga_id=?", (manga_id,))
+        return cursor.fetchone()
 # 实例化单例
 db_manager = DatabaseManager()

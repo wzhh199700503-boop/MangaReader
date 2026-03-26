@@ -3,7 +3,7 @@
         "ConcurrentTasks": 4,
         "DataDir": "data",
         "IsDownloadDebug": true,
-        "IsFullUpdated": false,
+        "IsFullUpdated": true,
         "LogDir": "logs",
         "LogLevel": "INFO",
         "RetryCount": 3
